@@ -48,7 +48,9 @@ app.add_middleware(
 
 # Configuration from environment variables
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://csxhklwgkaehwmrhuhyq.supabase.co")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
+# Use ANON key for better security (relies on RLS policies)
+# Only use SERVICE_ROLE key if you need to bypass RLS for admin operations
+SUPABASE_KEY = os.environ.get("SUPABASE_ANON_KEY", os.environ.get("SUPABASE_KEY", ""))
 MODEL_PATH = os.environ.get("MODEL_PATH", "models/progress_model.pkl")
 
 # In-memory status tracking
@@ -173,19 +175,24 @@ def train_model_background(user_id: Optional[str], predict_weeks: int, max_lag: 
 
 
 @app.post("/train", response_model=TrainResponse)
-async def train(request: TrainRequest = Body(default_factory=TrainRequest), background_tasks: BackgroundTasks):
+async def train(
+    background_tasks: BackgroundTasks,
+    predict_weeks: int = 1,
+    max_lag: int = 2,
+    user_id: Optional[str] = None
+):
     """
     Train the progress prediction model.
     
     This endpoint triggers model training in the background. The model will be
     trained on all available workout data, or for a specific user if user_id is provided.
 
-    Accepts an empty POST body (defaults are used) so `curl -X POST /train` works.
+    Query params: predict_weeks (default 1), max_lag (default 2), user_id (optional)
     """
     if not SUPABASE_KEY:
         raise HTTPException(
             status_code=500,
-            detail="Supabase key not configured. Set SUPABASE_KEY environment variable."
+            detail="Supabase key not configured. Set SUPABASE_ANON_KEY or SUPABASE_KEY environment variable."
         )
     
     if training_status["is_training"]:
@@ -193,11 +200,6 @@ async def train(request: TrainRequest = Body(default_factory=TrainRequest), back
             status_code=409,
             detail="Model training is already in progress"
         )
-
-    # Read options from request (defaults are provided by Pydantic Body)
-    user_id = request.user_id
-    predict_weeks = request.predict_weeks
-    max_lag = request.max_lag
 
     # Start training in background
     background_tasks.add_task(
