@@ -226,9 +226,18 @@ def build_features(df: pd.DataFrame, max_lag: int = 2, predict_weeks_ahead: int 
     lag_cols = [c for c in df_expanded.columns if '_lag' in c or '_roll_mean' in c or '_roll_std' in c or '_velocity' in c or '_growth_rate' in c]
     df_expanded[lag_cols] = df_expanded[lag_cols].fillna(0).replace([np.inf, -np.inf], 0)
 
-    # Add time-based features
+    # Add comprehensive time-based features for temporal awareness
     df_expanded['week_of_year'] = df_expanded['week_start'].dt.isocalendar().week
     df_expanded['year'] = df_expanded['week_start'].dt.year
+    df_expanded['month'] = df_expanded['week_start'].dt.month
+    df_expanded['quarter'] = df_expanded['week_start'].dt.quarter
+    df_expanded['day_of_week'] = df_expanded['week_start'].dt.dayofweek  # 0=Monday, 6=Sunday
+    
+    # Seasonality (0=winter, 1=spring, 2=summer, 3=fall)
+    df_expanded['season'] = (df_expanded['month'] % 12) // 3
+    
+    # Days since start of year (for continuity)
+    df_expanded['day_of_year'] = df_expanded['week_start'].dt.dayofyear
 
     logger.info("Built features with %d rows and %d columns", df_expanded.shape[0], df_expanded.shape[1])
     return df_expanded
@@ -240,7 +249,8 @@ def train_model(df: pd.DataFrame, model_out: str, predict_weeks_ahead: int = 2):
     features = [c for c in df.columns if (
         ('_lag' in c) or ('_roll_mean' in c) or ('_roll_std' in c) or 
         ('_velocity' in c) or ('_growth_rate' in c) or 
-        c in ('avg_rpe','avg_reps','sessions','sets','total_volume','week_of_year','year','rest_days')
+        c in ('avg_rpe','avg_reps','sessions','sets','total_volume','rest_days',
+              'week_of_year','year','month','quarter','day_of_week','season','day_of_year')
     )]
     # Ensure features exist and handle inf values
     X = df[features].astype(float).replace([np.inf, -np.inf], 0)

@@ -48,9 +48,10 @@ app.add_middleware(
 
 # Configuration from environment variables
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://csxhklwgkaehwmrhuhyq.supabase.co")
-# Use ANON key for better security (relies on RLS policies)
-# Only use SERVICE_ROLE key if you need to bypass RLS for admin operations
-SUPABASE_KEY = os.environ.get("SUPABASE_ANON_KEY", os.environ.get("SUPABASE_KEY", ""))
+# For TRAINING: Use SERVICE_ROLE key to read ALL users' data (global model learning)
+# For PREDICTIONS: Use ANON key + RLS policies for security
+SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", os.environ.get("SUPABASE_KEY", ""))
+SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY", "")
 MODEL_PATH = os.environ.get("MODEL_PATH", "models/progress_model.pkl")
 
 # In-memory status tracking
@@ -142,8 +143,12 @@ def train_model_background(user_id: Optional[str], predict_weeks: int, max_lag: 
         else:
             logger.info("Starting GLOBAL model training on ALL users' data for better accuracy...")
         
-        # Fetch data
-        df = fetch_weekly_data(SUPABASE_URL, SUPABASE_KEY)
+        # Use SERVICE_ROLE key for training to access ALL users' data across RLS
+        if not SUPABASE_SERVICE_KEY:
+            raise ValueError("SUPABASE_SERVICE_ROLE_KEY not configured. Set it in environment variables for global training.")
+        
+        # Fetch data using service role key (bypasses RLS, reads all users)
+        df = fetch_weekly_data(SUPABASE_URL, SUPABASE_SERVICE_KEY)
         if df.empty:
             raise ValueError("No data fetched from Supabase")
         
