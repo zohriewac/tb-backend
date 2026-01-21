@@ -9,7 +9,7 @@ Endpoints:
   GET /health - Health check endpoint
 """
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Body
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Optional, List
@@ -173,12 +173,14 @@ def train_model_background(user_id: Optional[str], predict_weeks: int, max_lag: 
 
 
 @app.post("/train", response_model=TrainResponse)
-async def train(request: TrainRequest, background_tasks: BackgroundTasks):
+async def train(request: TrainRequest = Body(default_factory=TrainRequest), background_tasks: BackgroundTasks):
     """
     Train the progress prediction model.
     
     This endpoint triggers model training in the background. The model will be
     trained on all available workout data, or for a specific user if user_id is provided.
+
+    Accepts an empty POST body (defaults are used) so `curl -X POST /train` works.
     """
     if not SUPABASE_KEY:
         raise HTTPException(
@@ -191,17 +193,22 @@ async def train(request: TrainRequest, background_tasks: BackgroundTasks):
             status_code=409,
             detail="Model training is already in progress"
         )
-    
+
+    # Read options from request (defaults are provided by Pydantic Body)
+    user_id = request.user_id
+    predict_weeks = request.predict_weeks
+    max_lag = request.max_lag
+
     # Start training in background
     background_tasks.add_task(
         train_model_background,
-        request.user_id,
-        request.predict_weeks,
-        request.max_lag
+        user_id,
+        predict_weeks,
+        max_lag
     )
     
     return TrainResponse(
-        message="Model training started",
+        message=f"Model training started (predict_weeks={predict_weeks}, max_lag={max_lag})",
         status="training",
         timestamp=datetime.utcnow().isoformat()
     )
