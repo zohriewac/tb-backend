@@ -137,20 +137,25 @@ def train_model_background(user_id: Optional[str], predict_weeks: int, max_lag: 
         training_status["is_training"] = True
         training_status["last_error"] = None
         
-        logger.info("Starting model training...")
+        if user_id:
+            logger.info(f"Starting model training for specific user: {user_id}...")
+        else:
+            logger.info("Starting GLOBAL model training on ALL users' data for better accuracy...")
         
         # Fetch data
         df = fetch_weekly_data(SUPABASE_URL, SUPABASE_KEY)
         if df.empty:
             raise ValueError("No data fetched from Supabase")
         
-        # Filter to specific user if requested
+        # Filter to specific user only if explicitly requested
         if user_id:
             user_data = df[df['user_id'] == user_id]
             if user_data.empty:
                 raise ValueError(f"No data found for user {user_id}")
-            logger.info(f"Training for specific user: {user_id}")
+            logger.info(f"Training user-specific model: {user_id} ({len(user_data)} records)")
             df = user_data
+        else:
+            logger.info(f"Training global model on {len(df)} records from {df['user_id'].nunique()} users")
         
         # Build features
         df_feats = build_features(df, max_lag=max_lag, predict_weeks_ahead=predict_weeks)
@@ -164,7 +169,8 @@ def train_model_background(user_id: Optional[str], predict_weeks: int, max_lag: 
         train_model(df_feats, MODEL_PATH, predict_weeks_ahead=predict_weeks)
         
         training_status["last_trained"] = datetime.utcnow().isoformat()
-        logger.info("Model training completed successfully")
+        model_type = "user-specific" if user_id else "global"
+        logger.info(f"Model training completed successfully ({model_type} model)")
         
     except Exception as e:
         error_msg = str(e)
@@ -177,17 +183,22 @@ def train_model_background(user_id: Optional[str], predict_weeks: int, max_lag: 
 @app.post("/train", response_model=TrainResponse)
 async def train(
     background_tasks: BackgroundTasks,
-    predict_weeks: int = 1,
+    predict_weeks: int = 2,
     max_lag: int = 2,
     user_id: Optional[str] = None
 ):
     """
     Train the progress prediction model.
     
-    This endpoint triggers model training in the background. The model will be
-    trained on all available workout data, or for a specific user if user_id is provided.
-
-    Query params: predict_weeks (default 1), max_lag (default 2), user_id (optional)
+    By DEFAULT, trains a GLOBAL model on ALL users' data for maximum accuracy.
+    This learns patterns across all users' workouts to make better predictions.
+    
+    Optionally, set user_id to train a user-specific model (less accurate with limited data).
+    
+    Query params:
+    - predict_weeks: Number of weeks ahead to predict (default 2)
+    - max_lag: Number of weekly lags for features (default 2)
+    - user_id: Optional user ID for user-specific model (omit for global model)
     """
     if not SUPABASE_KEY:
         raise HTTPException(
@@ -201,6 +212,8 @@ async def train(
             detail="Model training is already in progress"
         )
 
+    model_type = "user-specific" if user_id else "global (all users)"
+    
     # Start training in background
     background_tasks.add_task(
         train_model_background,
@@ -210,7 +223,7 @@ async def train(
     )
     
     return TrainResponse(
-        message=f"Model training started (predict_weeks={predict_weeks}, max_lag={max_lag})",
+        message=f"Model training started ({model_type}, predict_weeks={predict_weeks}, max_lag={max_lag})",
         status="training",
         timestamp=datetime.utcnow().isoformat()
     )
