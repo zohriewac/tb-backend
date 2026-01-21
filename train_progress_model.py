@@ -186,7 +186,11 @@ def build_features(df: pd.DataFrame, max_lag: int = 2, predict_weeks_ahead: int 
     # group and create lags
     def make_lags(group):
         group = group.sort_values('week_start')
-        for col in ['max_e1rm', 'max_weight', 'total_volume', 'avg_rpe', 'avg_reps', 'sessions', 'sets']:
+
+        # Rest-awareness: days between sessions (using week_start gaps as weekly aggregation)
+        group['rest_days'] = group['week_start'].diff().dt.days.fillna(7).clip(lower=0)
+
+        for col in ['max_e1rm', 'max_weight', 'total_volume', 'avg_rpe', 'avg_reps', 'sessions', 'sets', 'rest_days']:
             # Create lag features directly without forcing weekly frequency
             group[f'{col}_lag1'] = group[col].shift(1)
             group[f'{col}_lag2'] = group[col].shift(2)
@@ -236,7 +240,7 @@ def train_model(df: pd.DataFrame, model_out: str, predict_weeks_ahead: int = 2):
     features = [c for c in df.columns if (
         ('_lag' in c) or ('_roll_mean' in c) or ('_roll_std' in c) or 
         ('_velocity' in c) or ('_growth_rate' in c) or 
-        c in ('avg_rpe','avg_reps','sessions','sets','total_volume','week_of_year','year')
+        c in ('avg_rpe','avg_reps','sessions','sets','total_volume','week_of_year','year','rest_days')
     )]
     # Ensure features exist and handle inf values
     X = df[features].astype(float).replace([np.inf, -np.inf], 0)
