@@ -116,7 +116,7 @@ async def health_check():
     return {
         "status": "healthy",
         "timestamp": datetime.utcnow().isoformat(),
-        "supabase_configured": bool(SUPABASE_KEY),
+        "supabase_configured": bool(SUPABASE_SERVICE_KEY),
         "model_exists": os.path.exists(MODEL_PATH)
     }
 
@@ -205,10 +205,10 @@ async def train(
     - max_lag: Number of weekly lags for features (default 2)
     - user_id: Optional user ID for user-specific model (omit for global model)
     """
-    if not SUPABASE_KEY:
+    if not SUPABASE_SERVICE_KEY:
         raise HTTPException(
             status_code=500,
-            detail="Supabase key not configured. Set SUPABASE_ANON_KEY or SUPABASE_KEY environment variable."
+            detail="Supabase service key not configured. Set SUPABASE_SERVICE_ROLE_KEY environment variable."
         )
     
     if training_status["is_training"]:
