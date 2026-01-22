@@ -304,19 +304,20 @@ def train_model(df: pd.DataFrame, model_out: str, predict_weeks_ahead: int = 2):
 
 
 def predict_next_weeks(model_file: str, df_latest: pd.DataFrame, user_id: Optional[str] = None, num_future_weeks: int = 4) -> pd.DataFrame:
-    """Load model and predict estimated 1RM for current week and N weeks ahead.
+    """Iteratively predict current and future estimated 1RM per exercise.
 
-    df_latest should have the same feature columns as used during training.
-    Returns predictions for: current week (week 0) and future weeks (1 to num_future_weeks)
+    The model is autoregressive: each future step feeds the previous prediction
+    into the lagged features so the line moves instead of staying flat.
     """
     saved = joblib.load(model_file)
     pipeline = saved['pipeline']
     features = saved['features']
-    predict_weeks_ahead = saved.get('predict_weeks_ahead', 2)
 
-    # Generate predictions for multiple weeks
+    # Columns we evolve step to step
+    signal_cols = ['max_e1rm', 'max_weight', 'total_volume', 'avg_rpe', 'avg_reps', 'sessions', 'sets', 'rest_days']
+
     all_predictions = []
-    
+
     for _, row in df_latest.iterrows():
         user_ex_predictions = {
             'user_id': row['user_id'],
@@ -324,26 +325,64 @@ def predict_next_weeks(model_file: str, df_latest: pd.DataFrame, user_id: Option
             'exercise_name': row['exercise_name'],
             'predictions': []
         }
-        
-        # Get features for this exercise/user
-        row_features = row[features].astype(float).values.reshape(1, -1)
-        
-        # Predict for each week (0 = current, 1-N = future)
-        for week_offset in range(num_future_weeks + 1):
-            current_week_start = row['week_start']
-            prediction_date = current_week_start + pd.Timedelta(weeks=week_offset)
-            
-            # Make prediction
-            predicted_1rm = pipeline.predict(row_features)[0]
-            
+
+        # Work on a mutable copy
+        working = row.copy()
+
+        # Helper to push a prediction row to the list
+        def append_pred(week_start_ts: pd.Timestamp, value: float, week_offset: int):
             user_ex_predictions['predictions'].append({
-                'week_start': prediction_date.strftime('%Y-%m-%d'),
-                'predicted_e1rm': float(predicted_1rm),
+                'week_start': week_start_ts.strftime('%Y-%m-%d'),
+                'predicted_e1rm': float(value),
                 'week_offset': week_offset
             })
-        
+
+        # Week 0: current expected 1RM (use observed max_e1rm if available)
+        week0_value = float(working.get('max_e1rm', 0.0))
+        append_pred(working['week_start'], week0_value, 0)
+
+        # Iteratively predict future weeks
+        for week_offset in range(1, num_future_weeks + 1):
+            # Predict next step using current feature snapshot
+            row_features = working[features].astype(float).replace([np.inf, -np.inf], 0).values.reshape(1, -1)
+            predicted_1rm = float(pipeline.predict(row_features)[0])
+
+            # Advance week_start
+            next_week_start = working['week_start'] + pd.Timedelta(weeks=1)
+
+            # Update base signals for next iteration (autoregressive feed)
+            # Shift lags: lag2 <= lag1, lag1 <= current
+            for col in signal_cols:
+                curr = working.get(col, 0.0)
+                lag1 = working.get(f'{col}_lag1', curr)
+                working[f'{col}_lag2'] = lag1
+                working[f'{col}_lag1'] = curr
+
+                # rolling stats over last two values (curr, lag1)
+                working[f'{col}_roll_mean2'] = np.mean([curr, lag1])
+                working[f'{col}_roll_std2'] = float(np.std([curr, lag1]))
+                working[f'{col}_velocity'] = curr - lag1
+                working[f'{col}_growth_rate'] = 0.0 if lag1 == 0 else (curr - lag1) / lag1
+
+            # Set new current values for next step
+            working['max_e1rm'] = predicted_1rm
+            # keep max_weight/volume stable if unknown; they still get lagged/rolled
+            working['rest_days'] = 7  # assume weekly cadence for forecasts
+
+            # Update temporal features
+            working['week_start'] = next_week_start
+            working['week_of_year'] = next_week_start.isocalendar().week
+            working['year'] = next_week_start.year
+            working['month'] = next_week_start.month
+            working['quarter'] = next_week_start.quarter
+            working['day_of_week'] = next_week_start.dayofweek
+            working['season'] = (working['month'] % 12) // 3
+            working['day_of_year'] = next_week_start.dayofyear
+
+            append_pred(next_week_start, predicted_1rm, week_offset)
+
         all_predictions.append(user_ex_predictions)
-    
+
     # Flatten for return
     result_rows = []
     for pred_group in all_predictions:
@@ -356,7 +395,7 @@ def predict_next_weeks(model_file: str, df_latest: pd.DataFrame, user_id: Option
                 'predicted_e1rm': pred['predicted_e1rm'],
                 'week_offset': pred['week_offset']
             })
-    
+
     out = pd.DataFrame(result_rows)
     if user_id:
         out = out[out['user_id'] == user_id]
