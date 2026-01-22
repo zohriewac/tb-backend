@@ -303,20 +303,61 @@ def train_model(df: pd.DataFrame, model_out: str, predict_weeks_ahead: int = 2):
     return pipeline, features
 
 
-def predict_next_weeks(model_file: str, df_latest: pd.DataFrame, user_id: Optional[str] = None) -> pd.DataFrame:
-    """Load model and predict estimated 1RM N weeks ahead for the latest available week rows in df_latest.
+def predict_next_weeks(model_file: str, df_latest: pd.DataFrame, user_id: Optional[str] = None, num_future_weeks: int = 4) -> pd.DataFrame:
+    """Load model and predict estimated 1RM for current week and N weeks ahead.
 
     df_latest should have the same feature columns as used during training.
+    Returns predictions for: current week (week 0) and future weeks (1 to num_future_weeks)
     """
     saved = joblib.load(model_file)
     pipeline = saved['pipeline']
     features = saved['features']
     predict_weeks_ahead = saved.get('predict_weeks_ahead', 2)
 
-    X = df_latest[features].astype(float)
-    preds = pipeline.predict(X)
-    out = df_latest[['user_id','exercise_id','exercise_name','week_start']].copy()
-    out[f'pred_e1rm_{predict_weeks_ahead}wk'] = preds
+    # Generate predictions for multiple weeks
+    all_predictions = []
+    
+    for _, row in df_latest.iterrows():
+        user_ex_predictions = {
+            'user_id': row['user_id'],
+            'exercise_id': row['exercise_id'],
+            'exercise_name': row['exercise_name'],
+            'predictions': []
+        }
+        
+        # Get features for this exercise/user
+        row_features = row[features].astype(float).values.reshape(1, -1)
+        
+        # Predict for each week (0 = current, 1-N = future)
+        for week_offset in range(num_future_weeks + 1):
+            current_week_start = row['week_start']
+            prediction_date = current_week_start + pd.Timedelta(weeks=week_offset)
+            
+            # Make prediction
+            predicted_1rm = pipeline.predict(row_features)[0]
+            
+            user_ex_predictions['predictions'].append({
+                'week_start': prediction_date.strftime('%Y-%m-%d'),
+                'predicted_e1rm': float(predicted_1rm),
+                'week_offset': week_offset
+            })
+        
+        all_predictions.append(user_ex_predictions)
+    
+    # Flatten for return
+    result_rows = []
+    for pred_group in all_predictions:
+        for pred in pred_group['predictions']:
+            result_rows.append({
+                'user_id': pred_group['user_id'],
+                'exercise_id': pred_group['exercise_id'],
+                'exercise_name': pred_group['exercise_name'],
+                'week_start': pred['week_start'],
+                'predicted_e1rm': pred['predicted_e1rm'],
+                'week_offset': pred['week_offset']
+            })
+    
+    out = pd.DataFrame(result_rows)
     if user_id:
         out = out[out['user_id'] == user_id]
     return out

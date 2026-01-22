@@ -71,15 +71,20 @@ class TrainRequest(BaseModel):
 
 class PredictRequest(BaseModel):
     user_id: str = Field(..., description="User ID to generate predictions for")
+    num_weeks: int = Field(4, description="Number of future weeks to predict", ge=1, le=12)
+
+
+class PredictionPoint(BaseModel):
+    week_start: str
+    predicted_e1rm: float
+    week_offset: int
 
 
 class PredictionResponse(BaseModel):
     user_id: str
     exercise_id: str
     exercise_name: str
-    week_start: str
-    predicted_e1rm: float
-    predict_weeks_ahead: int
+    predictions: List[PredictionPoint]
 
 
 class TrainResponse(BaseModel):
@@ -239,8 +244,8 @@ async def predict(request: PredictRequest):
     """
     Generate progress predictions for a specific user.
     
-    Returns predictions for all exercises the user has performed, based on
-    their most recent workout data.
+    Returns predictions for all exercises the user has performed.
+    Each exercise includes multiple prediction points from current week to future weeks.
     """
     # Use service key for predictions (needs to access all data to build features)
     if not SUPABASE_SERVICE_KEY:
@@ -274,7 +279,7 @@ async def predict(request: PredictRequest):
         # Build features (use same params as model was trained with)
         import joblib
         model_info = joblib.load(MODEL_PATH)
-        predict_weeks_ahead = model_info.get('predict_weeks_ahead', 1)
+        predict_weeks_ahead = model_info.get('predict_weeks_ahead', 2)
         
         df_feats = build_features(user_data, max_lag=2, predict_weeks_ahead=predict_weeks_ahead)
         
@@ -286,23 +291,39 @@ async def predict(request: PredictRequest):
         
         # Get predictions for most recent week per exercise
         last_weeks = df_feats.sort_values('week_start').groupby(['user_id', 'exercise_id']).tail(1)
-        predictions_df = predict_next_weeks(MODEL_PATH, last_weeks, user_id=request.user_id)
+        predictions_df = predict_next_weeks(MODEL_PATH, last_weeks, user_id=request.user_id, num_future_weeks=request.num_weeks)
+        
+        # Group predictions by exercise
+        exercise_predictions = {}
+        for _, row in predictions_df.iterrows():
+            key = (row['user_id'], row['exercise_id'], row['exercise_name'])
+            if key not in exercise_predictions:
+                exercise_predictions[key] = []
+            exercise_predictions[key].append({
+                'week_start': row['week_start'],
+                'predicted_e1rm': round(row['predicted_e1rm'], 2),
+                'week_offset': row['week_offset']
+            })
         
         # Convert to response format
-        pred_col = f'pred_e1rm_{predict_weeks_ahead}wk'
         predictions = [
             PredictionResponse(
-                user_id=row['user_id'],
-                exercise_id=row['exercise_id'],
-                exercise_name=row['exercise_name'],
-                week_start=row['week_start'].strftime('%Y-%m-%d'),
-                predicted_e1rm=round(row[pred_col], 2),
-                predict_weeks_ahead=predict_weeks_ahead
+                user_id=user_id,
+                exercise_id=exercise_id,
+                exercise_name=exercise_name,
+                predictions=[
+                    PredictionPoint(
+                        week_start=pred['week_start'],
+                        predicted_e1rm=pred['predicted_e1rm'],
+                        week_offset=pred['week_offset']
+                    )
+                    for pred in sorted(preds, key=lambda x: x['week_offset'])
+                ]
             )
-            for _, row in predictions_df.iterrows()
+            for (user_id, exercise_id, exercise_name), preds in exercise_predictions.items()
         ]
         
-        logger.info(f"Generated {len(predictions)} predictions for user {request.user_id}")
+        logger.info(f"Generated predictions for {len(predictions)} exercises for user {request.user_id}")
         return predictions
         
     except HTTPException:
