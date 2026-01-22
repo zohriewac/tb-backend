@@ -242,10 +242,11 @@ async def predict(request: PredictRequest):
     Returns predictions for all exercises the user has performed, based on
     their most recent workout data.
     """
-    if not SUPABASE_KEY:
+    # Use service key for predictions (needs to access all data to build features)
+    if not SUPABASE_SERVICE_KEY:
         raise HTTPException(
             status_code=500,
-            detail="Supabase key not configured. Set SUPABASE_KEY environment variable."
+            detail="Supabase service key not configured. Set SUPABASE_SERVICE_ROLE_KEY environment variable."
         )
     
     if not os.path.exists(MODEL_PATH):
@@ -257,7 +258,7 @@ async def predict(request: PredictRequest):
     try:
         # Fetch latest data for the user
         logger.info(f"Fetching data for user {request.user_id}")
-        df = fetch_weekly_data(SUPABASE_URL, SUPABASE_KEY)
+        df = fetch_weekly_data(SUPABASE_URL, SUPABASE_SERVICE_KEY)
         
         if df.empty:
             raise HTTPException(status_code=404, detail="No workout data found")
